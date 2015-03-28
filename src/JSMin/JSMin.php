@@ -111,35 +111,36 @@ class JSMin {
             mb_internal_encoding('8bit');
         }
 
-    	// Remove the utf-8 BOM to save transfer bytes.
-		// Otherwise, line breaks before the 2nd comment are kept and
-		// lots of zero bytes stay, leading to additional waste and parsing
-		// exceptions.
-		$first2 = substr($this->input, 0, 2);
-		$first3 = substr($this->input, 0, 3);
-		$first4 = substr($this->input, 0, 4);
-		$encoding = 'UTF-8';
-		// Unicode BOM is U+FEFF, but after encoded, it will look like this.
-		if ($first3 == chr(0xEF).chr(0xBB).chr(0xBF)) {
-			$this->input = substr($this->input, 3);
-		} elseif ($first4 == chr(0x00).chr(0x00).chr(0xFE).chr(0xFF)) {
-			$encoding = 'UTF-32BE';
-			$this->input = substr($this->input, 4);
-		} elseif ($first4 == chr(0xFF).chr(0xFE).chr(0x00).chr(0x00)) {
-			$encoding = 'UTF-32LE';
-			$this->input = substr($this->input, 4);
-		} elseif ($first2 == chr(0xFE).chr(0xFF)) {
-			$encoding = 'UTF-16BE';
-			$this->input = substr($this->input, 2);
-		} elseif ($first2 == chr(0xFF).chr(0xFE)) {
-			$encoding = 'UTF-16LE';
-			$this->input = substr($this->input, 2);
-		}
-		// Convert only non-8-bit files.
-		if ($encoding != 'UTF-8') {
-			$this->input = mb_convert_encoding($this->input, 'UTF-8', $encoding);
-		}
+        // Remove the utf-8 BOM to save transfer bytes.
+        // Otherwise, line breaks before the 2nd comment are kept and
+        // lots of zero bytes stay, leading to additional waste and parsing
+        // exceptions.
+        $first2 = substr($this->input, 0, 2);
+        $first3 = substr($this->input, 0, 3);
+        $first4 = substr($this->input, 0, 4);
+        $encoding = 'UTF-8';
+        // Unicode BOM is U+FEFF, but after encoded, it will look like this.
+        if ($first3 == chr(0xEF).chr(0xBB).chr(0xBF)) {
+            $this->input = substr($this->input, 3);
+        } elseif ($first4 == chr(0x00).chr(0x00).chr(0xFE).chr(0xFF)) {
+            $encoding = 'UTF-32BE';
+            $this->input = substr($this->input, 4);
+        } elseif ($first4 == chr(0xFF).chr(0xFE).chr(0x00).chr(0x00)) {
+            $encoding = 'UTF-32LE';
+            $this->input = substr($this->input, 4);
+        } elseif ($first2 == chr(0xFE).chr(0xFF)) {
+            $encoding = 'UTF-16BE';
+            $this->input = substr($this->input, 2);
+        } elseif ($first2 == chr(0xFF).chr(0xFE)) {
+            $encoding = 'UTF-16LE';
+            $this->input = substr($this->input, 2);
+        }
+        // Convert only non-8-bit files.
+        if ($encoding != 'UTF-8') {
+            $this->input = mb_convert_encoding($this->input, 'UTF-8', $encoding);
+        }
 
+        // replace all \r\n by \n as a preparation
         $this->input = str_replace("\r\n", "\n", $this->input);
         $this->inputLength = strlen($this->input);
 
@@ -149,6 +150,7 @@ class JSMin {
             // determine next command
             $command = self::ACTION_KEEP_A; // default
             if ($this->a === ' ') {
+                // Spaces shall be deleted if the next character is not in the range of alphanumeric or pre/ post increment
                 if (($this->lastByteOut === '+' || $this->lastByteOut === '-')
                         && ($this->b === $this->lastByteOut)) {
                     // Don't delete this space. If we do, the addition/subtraction
@@ -158,6 +160,7 @@ class JSMin {
                 }
             } elseif ($this->a === "\n") {
                 if ($this->b === ' ') {
+                    // LF shall be removed before whitespace
                     $command = self::ACTION_DELETE_A_B;
 
                     // in case of mbstring.func_overload & 2, must check for null b,
@@ -165,17 +168,22 @@ class JSMin {
                 } elseif ($this->b === null
                           || (false === strpos('{[(+-!~', $this->b)
                               && ! $this->isAlphaNum($this->b))) {
+                    // LF shall be kept before NULL or any character not {[(+-!~ or alphanumeric.
                     $command = self::ACTION_DELETE_A;
                 }
             } elseif (! $this->isAlphaNum($this->a)) {
+                // Before whitespace, non-alphanumeric characters shall be removed.
+                // before LF, non-alphanumeric except }])+-"' characters shall be removed.
                 if ($this->b === ' '
                     || ($this->b === "\n"
                         && (false === strpos('}])+-"\'', $this->a)))) {
                     $command = self::ACTION_DELETE_A_B;
                 }
             }
+            // Otherwise, the default action shall be used
             $this->action($command);
         }
+        // The output shall be trimmed before returning it.
         $this->output = trim($this->output);
 
         if ($mbIntEnc !== null) {
@@ -194,6 +202,7 @@ class JSMin {
      */
     protected function action($command)
     {
+        // The expressions "a + ++b" etc. shall not be compressed to "a+++b",
         // make sure we don't compress "a + ++b" to "a+++b", etc.
         if ($command === self::ACTION_DELETE_A_B
             && $this->b === ' '
@@ -208,6 +217,7 @@ class JSMin {
 
         switch ($command) {
             case self::ACTION_KEEP_A: // 1
+                // Handle kept comments and pre- / post increment / decrement expressions.
                 $this->output .= $this->a;
 
                 if ($this->keptComment) {
@@ -220,7 +230,9 @@ class JSMin {
 
                 // fallthrough intentional
             case self::ACTION_DELETE_A: // 2
+                // Handle quoted strings.
                 $this->a = $this->b;
+                // All content of a quoted string ('") shall remain untouched.
                 if ($this->a === "'" || $this->a === '"') { // string literal
                     $str = $this->a; // in case needed for exception
                     for(;;) {
@@ -232,12 +244,14 @@ class JSMin {
                             break;
                         }
                         if ($this->isEOF($this->a)) {
+                            // An unfinished quoted string shall lead to the JSMin_UnterminatedStringException exception.
                             $byte = $this->inputIndex - 1;
                             throw new UnterminatedStringException(
                                 "JSMin: Unterminated String at byte {$byte}: {$str}");
                         }
                         $str .= $this->a;
                         if ($this->a === '\\') {
+                            // In quoted strings. all escaped characters shall remain untouched.
                             $this->output .= $this->a;
                             $this->lastByteOut = $this->a;
 
@@ -249,6 +263,7 @@ class JSMin {
 
                 // fallthrough intentional
             case self::ACTION_DELETE_A_B: // 3
+                // Normal Code.
                 $this->b = $this->next();
                 if ($this->b === '/' && $this->isRegexpLiteral()) {
                     $this->output .= $this->a . $this->b;
@@ -256,6 +271,7 @@ class JSMin {
                     for(;;) {
                         $this->a = $this->get();
                         $pattern .= $this->a;
+                        // In code, all regular expressions ("/.../") shall remain untouched
                         if ($this->a === '[') {
                             for(;;) {
                                 $this->output .= $this->a;
@@ -264,11 +280,13 @@ class JSMin {
                                 if ($this->a === ']') {
                                     break;
                                 }
+                                // In regular expressions, all escaped characters shall remain untouched.
                                 if ($this->a === '\\') {
                                     $this->output .= $this->a;
                                     $this->a = $this->get();
                                     $pattern .= $this->a;
                                 }
+                                // In unterminated regular expressions, a JSMin_UnterminatedRegExpException shall be raised
                                 if ($this->isEOF($this->a)) {
                                     throw new UnterminatedRegExpException(
                                         "JSMin: Unterminated set in RegExp at byte "
@@ -298,16 +316,20 @@ class JSMin {
     }
 
     /**
+     * Check if a "/..." sequence is a regular expression.
+     *
      * @return bool
      */
     protected function isRegexpLiteral()
     {
+        // a is the previous character before the /... sequence.
         if (false !== strpos("(,=:[!&|?+-~*{;", $this->a)) {
             // we obviously aren't dividing
             return true;
         }
         $length = strlen($this->output);
         if ($this->a === ' ' || $this->a === "\n") {
+            // A JS file with only a regular expression shall remain untouched.
             if ($length < 2) { // weird edge case
                 return true;
             }
@@ -323,7 +345,7 @@ class JSMin {
             if (! $this->isAlphaNum($charBeforeKeyword)) {
                 // Remove whitespace to consistently align regex after keywords.
                 if ($this->a === ' ' || $this->a === "\n") {
-            	    $this->a = '';
+                    $this->a = '';
                 }
                 return true;
             }
@@ -351,9 +373,11 @@ class JSMin {
                 $c = null;
             }
         }
+        // Convert all characters not in ordinal range '\n' and ' ' to '~' to spaces.
         if (ord($c) >= self::ORD_SPACE || $c === "\n" || $c === null) {
             return $c;
         }
+        // Convert all \r to \n. (or to space, see above?)
         if ($c === "\r") {
             return "\n";
         }
@@ -405,6 +429,8 @@ class JSMin {
             $comment .= $get;
             if (ord($get) <= self::ORD_LF) { // end of line reached
                 // if IE conditional comment
+                // Single line comments shall be dropped except for IE conditional comments. The trailing newline shall be preserved.
+                // IE Conditional comments start with '@' followed by cc_on|if|elif|else|end, followed by \b or @, case insensitive
                 if (preg_match('/^\\/@(?:cc_on|if|elif|else|end)\\b/', $comment)) {
                     $this->keptComment .= "/{$comment}";
                 }
@@ -428,6 +454,8 @@ class JSMin {
                 if ($this->peek() === '/') { // end of comment reached
                     $this->get();
                     if (0 === strpos($comment, '!')) {
+                        // Comments (from YUI) starting with ! shall be preserved.
+                        // Consecutive comments starting with ! shall be in a single line.
                         // preserved by YUI Compressor
                         if (!$this->keptComment) {
                             // don't prepend a newline if two comments right after one another
@@ -435,12 +463,14 @@ class JSMin {
                         }
                         $this->keptComment .= "/*!" . substr($comment, 1) . "*/\n";
                     } else if (preg_match('/^@(?:cc_on|if|elif|else|end)\\b/', $comment)) {
+                        // Multiline comments shall be dropped except for IE conditional and YUI comments
                         // IE conditional
                         $this->keptComment .= "/*{$comment}*/";
                     }
                     return;
                 }
             } elseif ($get === null) {
+                // The UnterminatedCommentException shall be raised if the multiline comment is not closed at end of file.
                 throw new UnterminatedCommentException(
                     "JSMin: Unterminated comment at byte {$this->inputIndex}: /*{$comment}");
             }
